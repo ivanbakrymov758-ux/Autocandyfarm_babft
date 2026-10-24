@@ -1,0 +1,506 @@
+-- 🍬 Auto-Fly to Candy House (полный скрипт, без парковки)
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local LocalPlayer = Players.LocalPlayer
+
+-- ===== КОНФИГ =====
+local AREAS = {}
+
+-- ===== ЗАГРУЗКА КУБОВ ИЗ TXT =====
+local function loadAreas()
+    AREAS = {}
+    local ok, content = pcall(function() return readfile("candy_areas.txt") end)
+    if not ok or not content then
+        pcall(function() writefile("candy_areas.txt", "-- x1,y1,z1 | x2,y2,z2\n") end)
+        return
+    end
+    for line in content:gmatch("[^\r\n]+") do
+        line = line:gsub("%-%-.*",""):gsub("^%s+",""):gsub("%s+$","")
+        if line == "" then continue end
+        local p1, p2 = line:match("([^|]+)|(.+)")
+        if p1 and p2 then
+            local x1,y1,z1 = p1:match("([^,]+),([^,]+),([^,]+)")
+            local x2,y2,z2 = p2:match("([^,]+),([^,]+),([^,]+)")
+            if x1 and x2 then
+                table.insert(AREAS, {
+                    min = Vector3.new(
+                        math.min(tonumber(x1),tonumber(x2)),
+                        math.min(tonumber(y1),tonumber(y2)),
+                        math.min(tonumber(z1),tonumber(z2))
+                    ),
+                    max = Vector3.new(
+                        math.max(tonumber(x1),tonumber(x2)),
+                        math.max(tonumber(y1),tonumber(y2)),
+                        math.max(tonumber(z1),tonumber(z2))
+                    )
+                })
+            end
+        end
+    end
+end
+
+local function saveAreasToFile()
+    local lines = {"-- x1,y1,z1 | x2,y2,z2"}
+    for _, a in pairs(AREAS) do
+        table.insert(lines, string.format("%.1f,%.1f,%.1f | %.1f,%.1f,%.1f",
+            a.min.X, a.min.Y, a.min.Z, a.max.X, a.max.Y, a.max.Z))
+    end
+    pcall(function() writefile("candy_areas.txt", table.concat(lines, "\n")) end)
+end
+
+local function isInAnyArea(pos)
+    if #AREAS == 0 then return true end
+    for _, a in pairs(AREAS) do
+        if pos.X >= a.min.X and pos.X <= a.max.X
+           and pos.Y >= a.min.Y and pos.Y <= a.max.Y
+           and pos.Z >= a.min.Z and pos.Z <= a.max.Z then
+            return true
+        end
+    end
+    return false
+end
+
+-- ===== ВИЗУАЛИЗАЦИЯ КУБОВ =====
+local visFolder = Instance.new("Folder")
+visFolder.Name = "AutoFly_Visuals"
+visFolder.Parent = Workspace
+
+local function clearVisuals()
+    for _, v in pairs(visFolder:GetChildren()) do v:Destroy() end
+end
+
+local function drawBox(min, max, color)
+    local center = (min + max) / 2
+    local size = max - min
+    local part = Instance.new("Part")
+    part.Name = "AreaBox"
+    part.Anchored = true
+    part.CanCollide = false
+    part.CanQuery = false
+    part.CanTouch = false
+    part.Transparency = 0.85
+    part.Color = color or Color3.fromRGB(0, 255, 100)
+    part.Material = Enum.Material.Neon
+    part.Size = size
+    part.CFrame = CFrame.new(center)
+    part.Parent = visFolder
+
+    local box = Instance.new("SelectionBox")
+    box.Adornee = part
+    box.LineThickness = 0.05
+    box.Color3 = color or Color3.fromRGB(0, 255, 100)
+    box.Transparency = 0.3
+    box.Parent = part
+end
+
+local function redrawVisuals()
+    clearVisuals()
+    for _, a in pairs(AREAS) do
+        drawBox(a.min, a.max, Color3.fromRGB(0, 255, 100))
+    end
+end
+
+-- ===== ПОИСК ДОМА =====
+local function findNearestHouseInArea(exclude)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local rootPos = hrp.Position
+    local best, bestDist = nil, math.huge
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if exclude[obj] then continue end
+        if obj:IsDescendantOf(visFolder) then continue end
+        local name = obj.Name:lower()
+        if (name:find("trick") or name:find("candy") or name:find("house"))
+           and (obj:IsA("Model") or obj:IsA("BasePart")) then
+            local pos = obj:IsA("Model")
+                and (obj.PrimaryPart and obj.PrimaryPart.Position
+                     or (obj:FindFirstChildWhichIsA("BasePart") and obj:FindFirstChildWhichIsA("BasePart").Position))
+                or obj.Position
+            if pos and isInAnyArea(pos) then
+                local d = (pos - rootPos).Magnitude
+                if d < bestDist then bestDist = d; best = obj end
+            end
+        end
+    end
+    return best
+end
+
+local function findDoor(house)
+    if not house then return nil end
+    local door = house:FindFirstChild("Door", true) or house:FindFirstChild("door", true)
+    if door and door:IsA("BasePart") then return door end
+    if house:IsA("Model") then return house.PrimaryPart or house:FindFirstChildWhichIsA("BasePart") end
+    return house
+end
+
+local function teleportToHouse(house)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local door = findDoor(house)
+    if not door then return end
+    hrp.CFrame = door.CFrame * CFrame.new(0, 3, -2)
+end
+
+-- ===== ЦИКЛ =====
+local AutoFarm = false
+local running = false
+local visited = {}
+
+local function loop()
+    while running do
+        if not AutoFarm then task.wait(0.3); continue end
+        local house = findNearestHouseInArea(visited)
+        if house then
+            teleportToHouse(house)
+            visited[house] = true
+            task.wait(1.2)
+        else
+            task.wait(1.0)
+        end
+    end
+end
+
+-- ===== МЕНЮ =====
+loadAreas()
+redrawVisuals()
+
+local sg = Instance.new("ScreenGui")
+sg.Name = "AutoFlyUI"
+sg.ResetOnSpawn = false
+sg.Parent = CoreGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 120, 0, 80)
+frame.Position = UDim2.new(1, -140, 0, 50)
+frame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = sg
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 5)
+corner.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 15)
+title.BackgroundTransparency = 1
+title.Text = "🍬 Auto-Fly"
+title.TextColor3 = Color3.new(1,1,1)
+title.Font = Enum.Font.GothamBold
+title.TextScaled = true
+title.Parent = frame
+
+local toggle = Instance.new("TextButton")
+toggle.Size = UDim2.new(0, 40, 0, 18)
+toggle.Position = UDim2.new(0.5, -20, 0, 18)
+toggle.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+toggle.Text = "OFF"
+toggle.TextColor3 = Color3.new(1,1,1)
+toggle.Font = Enum.Font.GothamBold
+toggle.TextScaled = true
+toggle.Parent = frame
+
+local tc = Instance.new("UICorner")
+tc.CornerRadius = UDim.new(0, 3)
+tc.Parent = toggle
+
+local areaBtn = Instance.new("TextButton")
+areaBtn.Size = UDim2.new(0, 50, 0, 13)
+areaBtn.Position = UDim2.new(0.5, -25, 0, 38)
+areaBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 200)
+areaBtn.Text = "📦"
+areaBtn.TextColor3 = Color3.new(1,1,1)
+areaBtn.Font = Enum.Font.Gotham
+areaBtn.TextScaled = true
+areaBtn.Parent = frame
+
+local ac = Instance.new("UICorner")
+ac.CornerRadius = UDim.new(0, 3)
+ac.Parent = areaBtn
+
+local deleteBtn = Instance.new("TextButton")
+deleteBtn.Size = UDim2.new(0, 50, 0, 13)
+deleteBtn.Position = UDim2.new(0.5, -25, 0, 55)
+deleteBtn.BackgroundColor3 = Color3.fromRGB(180, 30, 30)
+deleteBtn.Text = "🗑"
+deleteBtn.TextColor3 = Color3.new(1,1,1)
+deleteBtn.Font = Enum.Font.GothamBold
+deleteBtn.TextScaled = true
+deleteBtn.Parent = frame
+
+local dc = Instance.new("UICorner")
+dc.CornerRadius = UDim.new(0, 3)
+dc.Parent = deleteBtn
+
+-- ===== ОКНО ОБЛАСТИ =====
+local areaWindow
+
+local function makeInput(parent, pos, placeholder)
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(0, 35, 0, 14)
+    box.Position = pos
+    box.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+    box.TextColor3 = Color3.fromRGB(0, 255, 100)
+    box.Font = Enum.Font.Code
+    box.TextScaled = true
+    box.PlaceholderText = placeholder
+    box.ClearTextOnFocus = false
+    box.Parent = parent
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 3)
+    c.Parent = box
+    return box
+end
+
+local function openAreaWindow()
+    if areaWindow and areaWindow.Parent then areaWindow:Destroy() end
+
+    areaWindow = Instance.new("Frame")
+    areaWindow.Size = UDim2.new(0, 160, 0, 190)
+    areaWindow.Position = UDim2.new(0.5, -80, 0.5, -95)
+    areaWindow.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+    areaWindow.BorderSizePixel = 0
+    areaWindow.Active = true
+    areaWindow.Draggable = true
+    areaWindow.Parent = sg
+
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 5)
+    c.Parent = areaWindow
+
+    local t = Instance.new("TextLabel")
+    t.Size = UDim2.new(1, 0, 0, 15)
+    t.BackgroundTransparency = 1
+    t.Text = "📦 Область"
+    t.TextColor3 = Color3.new(1,1,1)
+    t.Font = Enum.Font.GothamBold
+    t.TextScaled = true
+    t.Parent = areaWindow
+
+    local p1Label = Instance.new("TextLabel")
+    p1Label.Size = UDim2.new(1, -10, 0, 11)
+    p1Label.Position = UDim2.new(0, 5, 0, 17)
+    p1Label.BackgroundTransparency = 1
+    p1Label.Text = "Точка 1:"
+    p1Label.TextColor3 = Color3.fromRGB(255, 200, 100)
+    p1Label.Font = Enum.Font.GothamBold
+    p1Label.TextScaled = true
+    p1Label.TextXAlignment = Enum.TextXAlignment.Left
+    p1Label.Parent = areaWindow
+
+    local x1 = makeInput(areaWindow, UDim2.new(0, 5, 0, 30), "X")
+    local y1 = makeInput(areaWindow, UDim2.new(0, 45, 0, 30), "Y")
+    local z1 = makeInput(areaWindow, UDim2.new(0, 85, 0, 30), "Z")
+
+    local p2Label = Instance.new("TextLabel")
+    p2Label.Size = UDim2.new(1, -10, 0, 11)
+    p2Label.Position = UDim2.new(0, 5, 0, 47)
+    p2Label.BackgroundTransparency = 1
+    p2Label.Text = "Точка 2:"
+    p2Label.TextColor3 = Color3.fromRGB(100, 200, 255)
+    p2Label.Font = Enum.Font.GothamBold
+    p2Label.TextScaled = true
+    p2Label.TextXAlignment = Enum.TextXAlignment.Left
+    p2Label.Parent = areaWindow
+
+    local x2 = makeInput(areaWindow, UDim2.new(0, 5, 0, 60), "X")
+    local y2 = makeInput(areaWindow, UDim2.new(0, 45, 0, 60), "Y")
+    local z2 = makeInput(areaWindow, UDim2.new(0, 85, 0, 60), "Z")
+
+    local take1 = Instance.new("TextButton")
+    take1.Size = UDim2.new(0, 65, 0, 12)
+    take1.Position = UDim2.new(0, 5, 0, 77)
+    take1.BackgroundColor3 = Color3.fromRGB(100, 100, 150)
+    take1.Text = "📍 поз.1"
+    take1.TextColor3 = Color3.new(1,1,1)
+    take1.Font = Enum.Font.Gotham
+    take1.TextScaled = true
+    take1.Parent = areaWindow
+    local t1c = Instance.new("UICorner"); t1c.CornerRadius = UDim.new(0,3); t1c.Parent = take1
+
+    local take2 = Instance.new("TextButton")
+    take2.Size = UDim2.new(0, 65, 0, 12)
+    take2.Position = UDim2.new(0, 75, 0, 77)
+    take2.BackgroundColor3 = Color3.fromRGB(100, 100, 150)
+    take2.Text = "📍 поз.2"
+    take2.TextColor3 = Color3.new(1,1,1)
+    take2.Font = Enum.Font.Gotham
+    take2.TextScaled = true
+    take2.Parent = areaWindow
+    local t2c = Instance.new("UICorner"); t2c.CornerRadius = UDim.new(0,3); t2c.Parent = take2
+
+    local listLabel = Instance.new("TextLabel")
+    listLabel.Size = UDim2.new(1, -10, 0, 11)
+    listLabel.Position = UDim2.new(0, 5, 0, 95)
+    listLabel.BackgroundTransparency = 1
+    listLabel.Text = "Кубы (" .. #AREAS .. "):"
+    listLabel.TextColor3 = Color3.new(1,1,1)
+    listLabel.Font = Enum.Font.Gotham
+    listLabel.TextScaled = true
+    listLabel.TextXAlignment = Enum.TextXAlignment.Left
+    listLabel.Parent = areaWindow
+
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, -10, 0, 35)
+    scroll.Position = UDim2.new(0, 5, 0, 107)
+    scroll.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 2
+    scroll.Parent = areaWindow
+    local scc = Instance.new("UICorner"); scc.CornerRadius = UDim.new(0,3); scc.Parent = scroll
+
+    local function refreshList()
+        for _, child in pairs(scroll:GetChildren()) do
+            if child:IsA("TextButton") then child:Destroy() end
+        end
+        for i, a in pairs(AREAS) do
+            local row = Instance.new("TextButton")
+            row.Size = UDim2.new(1, 0, 0, 11)
+            row.Position = UDim2.new(0, 0, 0, (i-1)*12)
+            row.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+            row.Text = string.format("#%d (%.0f,%.0f,%.0f)→(%.0f,%.0f,%.0f) ✖",
+                i, a.min.X, a.min.Y, a.min.Z, a.max.X, a.max.Y, a.max.Z)
+            row.TextColor3 = Color3.new(1,1,1)
+            row.Font = Enum.Font.Code
+            row.TextScaled = true
+            row.TextXAlignment = Enum.TextXAlignment.Left
+            row.Parent = scroll
+            row.MouseButton1Click:Connect(function()
+                table.remove(AREAS, i)
+                saveAreasToFile()
+                redrawVisuals()
+                refreshList()
+                listLabel.Text = "Кубы (" .. #AREAS .. "):"
+            end)
+        end
+        scroll.CanvasSize = UDim2.new(0, 0, 0, #AREAS * 12)
+    end
+
+    refreshList()
+
+    local addBtn = Instance.new("TextButton")
+    addBtn.Size = UDim2.new(0, 50, 0, 14)
+    addBtn.Position = UDim2.new(0, 5, 0, 145)
+    addBtn.BackgroundColor3 = Color3.fromRGB(50, 180, 50)
+    addBtn.Text = "➕"
+    addBtn.TextColor3 = Color3.new(1,1,1)
+    addBtn.Font = Enum.Font.GothamBold
+    addBtn.TextScaled = true
+    addBtn.Parent = areaWindow
+    local abc = Instance.new("UICorner"); abc.CornerRadius = UDim.new(0,3); abc.Parent = addBtn
+
+    local clearBtn = Instance.new("TextButton")
+    clearBtn.Size = UDim2.new(0, 50, 0, 14)
+    clearBtn.Position = UDim2.new(0, 60, 0, 145)
+    clearBtn.BackgroundColor3 = Color3.fromRGB(180, 100, 30)
+    clearBtn.Text = "🧹"
+    clearBtn.TextColor3 = Color3.new(1,1,1)
+    clearBtn.Font = Enum.Font.GothamBold
+    clearBtn.TextScaled = true
+    clearBtn.Parent = areaWindow
+    local cbc = Instance.new("UICorner"); cbc.CornerRadius = UDim.new(0,3); cbc.Parent = clearBtn
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 40, 0, 14)
+    closeBtn.Position = UDim2.new(1, -45, 0, 145)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    closeBtn.Text = "✖"
+    closeBtn.TextColor3 = Color3.new(1,1,1)
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextScaled = true
+    closeBtn.Parent = areaWindow
+    local ccb = Instance.new("UICorner"); ccb.CornerRadius = UDim.new(0,3); ccb.Parent = closeBtn
+
+    local function getPlayerPos()
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        return hrp and hrp.Position or nil
+    end
+
+    take1.MouseButton1Click:Connect(function()
+        local p = getPlayerPos()
+        if p then
+            x1.Text = string.format("%.0f", p.X)
+            y1.Text = string.format("%.0f", p.Y)
+            z1.Text = string.format("%.0f", p.Z)
+        end
+    end)
+
+    take2.MouseButton1Click:Connect(function()
+        local p = getPlayerPos()
+        if p then
+            x2.Text = string.format("%.0f", p.X)
+            y2.Text = string.format("%.0f", p.Y)
+            z2.Text = string.format("%.0f", p.Z)
+        end
+    end)
+
+    addBtn.MouseButton1Click:Connect(function()
+        local ax1, ay1, az1 = tonumber(x1.Text), tonumber(y1.Text), tonumber(z1.Text)
+        local ax2, ay2, az2 = tonumber(x2.Text), tonumber(y2.Text), tonumber(z2.Text)
+        if ax1 and ay1 and az1 and ax2 and ay2 and az2 then
+            table.insert(AREAS, {
+                min = Vector3.new(math.min(ax1,ax2), math.min(ay1,ay2), math.min(az1,az2)),
+                max = Vector3.new(math.max(ax1,ax2), math.max(ay1,ay2), math.max(az1,az2))
+            })
+            saveAreasToFile()
+            redrawVisuals()
+            refreshList()
+            listLabel.Text = "Кубы (" .. #AREAS .. "):"
+            addBtn.Text = "✓"
+            task.wait(1)
+            addBtn.Text = "➕"
+        else
+            addBtn.Text = "❌"
+            task.wait(1)
+            addBtn.Text = "➕"
+        end
+    end)
+
+    clearBtn.MouseButton1Click:Connect(function()
+        AREAS = {}
+        saveAreasToFile()
+        redrawVisuals()
+        refreshList()
+        listLabel.Text = "Кубы (0):"
+    end)
+
+    closeBtn.MouseButton1Click:Connect(function()
+        areaWindow:Destroy()
+    end)
+end
+
+-- ===== УДАЛЕНИЕ =====
+local function destroyAll()
+    running = false
+    AutoFarm = false
+    clearVisuals()
+    visFolder:Destroy()
+    for _, v in pairs(CoreGui:GetDescendants()) do
+        if v.Name == "AutoFlyUI" then v:Destroy() end
+    end
+    print("[AutoFly] Скрипт удалён")
+end
+_G.AutoFly_Destroy = destroyAll
+
+-- ===== ОБРАБОТЧИКИ =====
+toggle.MouseButton1Click:Connect(function()
+    AutoFarm = not AutoFarm
+    if AutoFarm then
+        toggle.Text = "ON"
+        toggle.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+        if not running then running = true; task.spawn(loop) end
+    else
+        toggle.Text = "OFF"
+        toggle.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    end
+end)
+
+areaBtn.MouseButton1Click:Connect(openAreaWindow)
+deleteBtn.MouseButton1Click:Connect(destroyAll)
+
+print("[AutoFly] Загружено.")
